@@ -4,7 +4,7 @@
 # Python script for communicating gestural animation data to an Arduino from
 # CSV files.
 # 
-
+#!/usr/bin/python
 import csv
 import pygame
 import serial
@@ -12,6 +12,18 @@ import struct
 import sys
 import time
 import yaml
+import random
+import numpy as np
+from random import randint
+
+# Import needed for camera ######################################################
+# make sure to install pygame in order for the import to work
+import pygame
+import pygame.camera 
+from pygame.locals import *
+#################################################################################
+
+import copy
 
 
 ###################### Implementation Specific Definitions #####################
@@ -38,27 +50,91 @@ globalTimeout = None
 # connected to a hardware port (read in from configs)
 serialPort = serial.Serial(None, 9600, timeout = globalTimeout)
 
+# The user will input the total number of gestures
+totalGestures = 0
 
+# a variable to keep track of the current branch
+currentBranch = 0
+
+# a variable to keep track of the new branch
+newBranch = 0
+
+# a boolean for checking whether in transition gesture
+transitionBool = False
+
+# a variable for storing in the next gesture when transition occurs 
+nextGesture = 0
+
+# a variable to store file name for pictures taken by the camera
+imageName = ""
 
 ###################### Implementation Specific Functions #######################
+
+"""
+A 2d array of gestures, divided into groups by which branch they are on
+Each array represents a branch. If there is only one branch, put all 
+gestures in one array.
+Ex) [[0,1,2]]
+If on multiple branches:
+Ex) [[0],[2],[4]]
+Make sure to not include the transition gesture as part of branch gesture
+"""
+gestureGroupList = [[0,1,2]]
+npGesture = np.array(gestureGroupList)
+
+"""
+List of transition gestures
+Ex) [1,3,5]
+"""
+transitionList = []
+
+""" 
+A list of transition gestures, marked [x,y,z] where 
+x is the starting branch, 
+y is the finish branch, and 
+z is the gesture number
+Ex) [[0,1,1],[1,2,3],[2,0,5]]
+"""
+transitionGestures = []
+
+# list of nontransition gestures - automatically generated
+l1 = npGesture.flatten()
+l3 = [x for x in list(l1) if x not in transitionList]
 
 # Simple example of changing the newGesture to a constant value
 def updateGesture(frame, csvGestureData, csvGestureLength):
     global newGesture
     global frameCounter
+    global gestureGroupList
+    global transitionGestures
+    global newBranch
+    global transitionBool
+    global l3
+    global currentBranch
 
-    nextGesture = 0
-    changeGestureFrame = 100
+    chosen = False
 
-    # Example of changing the newGesture
-    if frameCounter == changeGestureFrame:
-        frameCounter = 0
-        newGesture = nextGesture
+    # how many frames before a new gesture must be put in
+    changeGestureFrame = 10
+
+    # how many gestures there are
+    totalGestures = 6
+
+    # Choose between user input random gestures
+    if frame == changeGestureFrame and transitionBool == False:
+        newGesture = random.choice(l3)
+        print ("Current branch is: " + str(currentBranch))
+        # see which branch the new gesture belongs to and update accordingly
+        counter = 0
+        for sub_list in gestureGroupList:
+            for j in sub_list:
+                if j == newGesture:
+                    newBranch = counter
+                    print ("Future branch is: " + str(newBranch))
+            counter += 1
+
 
 ################################################################################
-
-
-
 
 
 def gestureSmooth(sleepTime, numObjects, startPosArray, endPosArray):
@@ -119,7 +195,6 @@ def gestureSmooth(sleepTime, numObjects, startPosArray, endPosArray):
         # time than the frame rate   
 
 
-
 def frame_handler(scene, numObjects, csvFile, motorIdentification):
     # Create an array to store the angles we get from the Blender scene, and a
     # bool to see if we should send these values to the Arduino
@@ -128,6 +203,9 @@ def frame_handler(scene, numObjects, csvFile, motorIdentification):
 
     # We will be modifying this global variable, so we declare it global
     global previousServoAngles
+
+    # main function will use the name to store the picture
+    global imageName
 
     # Generalized loop for putting an arbitrary number of object parameters out 
     # on the serial connection
@@ -146,6 +224,11 @@ def frame_handler(scene, numObjects, csvFile, motorIdentification):
             shouldResend = True
 
             previousServoAngles[i] = newAngles[i]
+
+        # Variable needed for camera ###############################################
+        # generate the file name for the picture
+        imageName = '_'.join(map(str,newAngles))
+        ############################################################################
 
     # If we should resend the motor positons, loop through and send each based
     # on the motor identification scheme (addressing/switching)
@@ -179,6 +262,21 @@ def frame_handler(scene, numObjects, csvFile, motorIdentification):
 def main():
     # We will be modifying this global variable, so we declare it global
     global previousServoAngles
+    global newGesture
+    global currentBranch
+    global newBranch
+    global transitionBool
+    global nextGesture
+    global gestureGroupList
+    global backwards
+
+    # initialize the camera ###################################################################
+    global imageName
+    pygame.init()
+    pygame.camera.init()
+    cam = pygame.camera.Camera("/dev/video0", (640,480))
+    cam.start()
+    ###########################################################################################
 
     # Read in the YAML configs
     fileName = "gesturerConfigs.yaml"
@@ -186,6 +284,13 @@ def main():
 
     switchNum = 400
     currentGesture = 0
+    # find which branch currentGesture is in
+    counter = 0
+    for sub_list in gestureGroupList:
+        for j in sub_list:
+            if j == newGesture:
+                currentBranch = counter
+        counter += 1
     switchCount = 0
 
     configs = yaml.load(fileStream, Loader=yaml.Loader)
@@ -239,6 +344,20 @@ def main():
     # Close the CSV input file
     csvInputFile.close()
 
+    # TODO: Append the Backward gestures in reverse order to the back of gestures
+    # So that first transition gesture backwards can be called with -1
+    for i in transitionList[::-1]:
+        # get the transition gesture to be reversed
+        tempGesture = copy.deepcopy(csvGestureData[i])
+        # reverse the transition gesture
+        tempGesture.reverse()
+        for i in range(len(csvGestureData)):
+            tempGesture[i][0] = str(i)
+        # append the transition gesture to the end of the gesture data
+        csvGestureData.append(tempGesture)
+        # update csvGestureLength
+        csvGestureLength.append(len(csvGestureData[-1]))
+
     # Start the number of frames as the length of the currentGesture
     numFrames = csvGestureLength[currentGesture]
 
@@ -256,20 +375,28 @@ def main():
     # Main loop for executing gestures/the logic for switching between them
     # TODO: Add modular logic for switching between gestures. MOSTLY DONE (just 
     # need to write an example updateGesture())
-    
+
     startTime = time.time()
     endTime = time.time()
 
+    # Variable for Camera #######################################################################
+    # counter for recording images
+    counter = 0
+    #############################################################################################
 
     while True:
-
-        
         for currentFrame in range(numFrames):
-
             startTime = time.time()
-
-            # Read CSV data and send to Arduino if necessary
+            
             frame_handler(currentFrame, numObjects, csvGestureData[currentGesture],  motorIdentification)
+            # Save image from Camera ####################################################################
+            # save the image
+            imageName = str(counter) + "_" + imageName
+            image = cam.get_image()
+            pygame.image.save(image, imageName)
+            counter += 1
+            #############################################################################################
+
             # Sleep to create a frame rate
             # endTime = time.time()
             # timeDifference = endTime - startTime
@@ -281,16 +408,54 @@ def main():
             # print(sleepTime)
 
             # LOGIC FOR SWITCHING "currentGesture" GOES HERE
-            updateGesture(currentFrame, csvGestureData, csvGestureLength)
+            # it will not do anything if the gesture is a transition gesture
+            if not transitionBool:
+                updateGesture(currentFrame, csvGestureData, csvGestureLength)
 
+
+            # if the new gestures is not the current gesture,
             if currentGesture != newGesture:
                 print("Switching Gestures...")
                 print("currentGesture is: " + str(currentGesture))
-                print("newGesture is: " + str(newGesture))
+
+
+            ############ TRANSITION ###################################################
+                # check if the two gestures are of different branches
+                if currentBranch != newBranch:
+                    print "Different Branches"
+                    # if they are not on the same branch, do a transition gesture, if it exists
+                    # first check if there is a transition gesture
+                    for sub_list in transitionGestures:
+                        # if transition gesture exists, set the transitionBool as True
+                        # the transitionBool will guarantee that the gesture will not change with updateGesture
+                        # and store the newGesture to use in the future
+                        # and set the new gesture as transition gesture
+                        if sub_list[0] == currentBranch and sub_list[1] == newBranch: 
+                            transitionBool = True
+                            nextGesture = newGesture
+                            newGesture = sub_list[2]
+                        # if the transition gesture is present but we need to play it backwards
+                        elif sub_list[0] == newBranch and sub_list[1] == currentBranch:
+                            transitionBool = True
+                            nextGesture = newGesture
+                            # get the index of the newGesture
+                            backGesture = sub_list[2]
+                            # find which transition gesture it is
+                            backGesture = transitionList.index(backGesture)
+                            # add 1 and negate it for correct position of the transition
+                            newGesture = -(backGesture+1)
+                    # change the current branch to new branch
+                    currentBranch = newBranch
+                    print("Playing transition gesture...")
+
+            ############ TRANSITION ###################################################
+
                 startPosArray = [0] * numObjects
                 endPosArray = [0] * numObjects
                 oldGesture = currentGesture
                 currentGesture = newGesture
+
+                print("currentGesture is: " + str(currentGesture))
 
                 startPosArray = csvGestureData[oldGesture][currentFrame]
                 endPosArray = csvGestureData[currentGesture][0]
@@ -302,7 +467,27 @@ def main():
                 gestureSmooth(sleepTime/2, numObjects, startPosArray, endPosArray)
 
                 # BE SURE TO "break" AT THE END OF THE SWITCHING GESTURES LOGIC
-                break
+                break   
+
+            if transitionBool == True and (currentFrame+1) == numFrames:
+                print "transition finished"
+                transitionBool = False
+                startPosArray = [0] * numObjects
+                endPosArray = [0] * numObjects
+                oldGesture = currentGesture
+                currentGesture = nextGesture
+                newGesture = currentGesture
+
+                print("currentGesture is: " + str(currentGesture))
+
+                startPosArray = csvGestureData[oldGesture][currentFrame]
+                endPosArray = csvGestureData[currentGesture][0]
+                numFrames = csvGestureLength[currentGesture]
+
+                # Note, if you want linear smoothing between gestures, create arrays 
+                # containing the start and end positions of each object and uncomment
+                # the following line
+                gestureSmooth(sleepTime/2, numObjects, startPosArray, endPosArray)
 
             endTime = time.time()
 
@@ -316,14 +501,140 @@ def main():
                 time.sleep(sleepTime - timeDifference)
             else:
                 print("Execution time exceeded the frame rate...")
+
+            #time.sleep(0.4)
+
             # Otherwise, we do not want to sleep as we have already spent more
             # time than the frame rate
 
             # startTime = time.time()
-            
 
-            
+'''
+Code used for Tkinter GUI
+##################### Python Tkinter GUI #######################################
+<<<<<<< HEAD
+#import Tkinter as tk
+#import threading
+#from Tkinter import *
+class GesturerGUI(tk.Tk):
+    def __init__(self):
+        tk.Tk.__init__(self)
+        # set number of total gestures
+        self.v = tk.StringVar()
+        self.v.set("0")
+        self.entry = tk.Entry(self, textvariable=self.v)
+        self.button = tk.Button(self, text="Set Total number of Gestures", command=self.on_button)
+        self.entry.pack()
+        self.button.pack()
 
+        # set frame change rate
+        self.v2 = tk.StringVar()
+        self.v2.set("0")
+        self.entry2 = tk.Entry(self, textvariable=self.v2)
+        self.button2 = tk.Button(self, text="Set Frame Change Rate", command=self.set_frame_rate)
+        self.entry2.pack()
+        self.button2.pack()
+
+        # allow user to manually change gesture
+        self.v3 = tk.StringVar()
+        self.v3.set("0")
+        self.entry3 = tk.Entry(self, textvariable=self.v3)
+        self.button3 = tk.Button(self, text="Manually Change Gesture Number", command=self.changeGesture)
+        self.entry3.pack()
+        self.button3.pack()
+
+        # allow user to manually change gesture
+        # put in array for transition gesture numbers
+        self.v4 = tk.StringVar()
+        self.v4.set("0")
+        self.entry4 = tk.Entry(self, textvariable=self.v4)
+        self.button4 = tk.Button(self, text="Enter Transition Gesture Number", command=self.transition)
+        self.entry4.pack()
+        self.button4.pack()
+
+        # put in array for groups of gestures
+        # if next gesture is in a gesture group that needs transition gesture,
+        # main will play transition before playing other gestures
+        # make sure to match gesture groups to transition gestures:
+        # i.e.: transition gesture 1 for transitioning to gesture group 1
+        # Input must be integers separated by commas
+        self.v5 = tk.StringVar()
+        self.v5.set("0")
+        self.entry5 = tk.Entry(self, textvariable=self.v5)
+        self.button5 = tk.Button(self, text="Enter Gesture Group", command=self.group)
+        self.entry5.pack()
+        self.button5.pack()
+
+        self.v6 = tk.StringVar()
+        self.v6.set("0")
+        self.entry6 = tk.Entry(self, textvariable=self.v6)
+        self.button6 = tk.Button(self, text="Enter Gesture Group of 1st Gesture", command=self.beginGroup)
+        self.entry6.pack()
+        self.button6.pack()
+
+        # button to play the gestures
+        self.button = tk.Button(self, text = "Play Gestures", command = self.startGestures)
+        self.button.pack()
+
+    def on_button(self):
+        global totalGestures
+        totalGestures = self.v.get()
+        print('There is a total of ' + self.v.get() + ' gestures.')
+
+    def set_frame_rate(self):
+        global changeGestureFrame
+        changeGestureFrame = self.v2.get()
+        print('Script will randomize gestures every ' + self.v2.get() + ' frames.')
+
+    def startGestures(self):
+        threads = []
+        t = threading.Thread(target=main)
+        threads.append(t)
+        self.button.config(state=tk.DISABLED)
+        print 'starting main thread'
+        t.start()
+
+    def changeGesture(self):
+        global newGesture
+        newGesture = int(self.v3.get())
+        print('The new gesture is: ' + self.v3.get())
+
+    def transition(self):
+        global transitionGestures
+        s = int(self.v4.get())
+        transitionGestures.append(s)
+        print(transitionGestures)
+
+    def group(self):
+        global gestureGroups
+        s = self.v5.get()
+        gestureGroups.append(s)
+        print(gestureGroups)
+
+    def beginGroup(self):
+        global currentGesture
+        currentGesture = int(self.v6.get())
+
+app = GesturerGUI()
+app.mainloop()
+=======
+=======
+##################### Python Tkinter GUI #######################################
+
+#b = Button(text="click me", command=main)
+#b.pack()
+
+#mainloop()
+>>>>>>> parent of f5ac6fc... Random gestures on 3 motors now work. A simple GUI is in place, allowing the user to put total number of gestures and frame change rate without going into the code. IMPORTANT: to rerun with different parameters, make sure to shut off the GUI and ctrl+c in the terminal so that nothing is running.
+
+#b = Button(text="click me", command=main)
+#b.pack()
+
+#mainloop()
+>>>>>>> parent of f5ac6fc... Random gestures on 3 motors now work. A simple GUI is in place, allowing the user to put total number of gestures and frame change rate without going into the code. IMPORTANT: to rerun with different parameters, make sure to shut off the GUI and ctrl+c in the terminal so that nothing is running.
+
+################################################################################            
+'''
 
 if __name__ == "__main__":  
     main()  
