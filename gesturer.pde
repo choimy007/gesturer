@@ -143,6 +143,7 @@ void draw() {
     thread("readPipe");
     background(100);
     
+<<<<<<< HEAD
     if(countDownToSecondGoing > 1)
 	countDownToSecondGoing--;
     else if (countDownToSecondGoing > 0){
@@ -150,6 +151,9 @@ void draw() {
 	countDownToSecondGoing--;
     }
 
+=======
+    // Update positions for a dial based on mouse position and pressed status
+>>>>>>> ad5c79355afe7c5fce7bc42dd7223a12782bc6c3
     if (mousePressed == false) {
         // ?: If the mouse is not pressed, for each motor that is going set the
         //    draw angle equal to their current Player position (aka. moving 
@@ -274,6 +278,7 @@ void readPipe() {
     else if (level == 3){
 	going[0] = true;
 	countDownToSecondGoing = 200;
+
     }
 }
 
