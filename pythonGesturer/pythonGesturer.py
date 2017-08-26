@@ -512,7 +512,6 @@ def main():
 '''
 Code used for Tkinter GUI
 ##################### Python Tkinter GUI #######################################
-<<<<<<< HEAD
 #import Tkinter as tk
 #import threading
 #from Tkinter import *
@@ -617,8 +616,6 @@ class GesturerGUI(tk.Tk):
 
 app = GesturerGUI()
 app.mainloop()
-=======
-=======
 ##################### Python Tkinter GUI #######################################
 
 #b = Button(text="click me", command=main)
